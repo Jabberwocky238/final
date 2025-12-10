@@ -1,0 +1,1 @@
+upload and monitor之后打开Lightblue搜索PDMonitor连接
