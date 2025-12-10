@@ -1,117 +1,149 @@
 #include "ble_service.h"
-#include <cstring>
 
-BLEService::BLEService() {
-    bleSerial = new UnbufferedSerial(BLE_TX, BLE_RX, BLE_BAUD);
-    deviceConnected = false;
-    connectionTimer.start();
+// 静态事件队列，用于处理 BLE 事件
+static events::EventQueue event_queue(16 * EVENTS_EVENT_SIZE);
+
+BLEService::BLEService() : 
+    _ble(BLE::Instance()), 
+    _event_queue(event_queue),
+    _connected(false),
+    _tremorChar(nullptr),
+    _dyskinesiaChar(nullptr),
+    _fogChar(nullptr),
+    _adv_handle(ble::LEGACY_ADVERTISING_HANDLE)
+{
 }
 
 BLEService::~BLEService() {
-    delete bleSerial;
+    // 清理资源
 }
 
-void BLEService::sendCommand(const char* cmd) {
-    bleSerial->write(cmd, strlen(cmd));
-    thread_sleep_for(100);
-}
-
-bool BLEService::waitForResponse(const char* expected, uint32_t timeout_ms) {
-    char buffer[64];
-    int idx = 0;
-    uint32_t start = connectionTimer.elapsed_time().count() / 1000;
+void BLEService::begin() {
+    printf("Initializing onboard BLE...\r\n");
     
-    while ((connectionTimer.elapsed_time().count() / 1000 - start) < timeout_ms) {
-        char c;
-        if (bleSerial->read(&c, 1) == 1) {
-            buffer[idx++] = c;
-            if (idx >= sizeof(buffer) - 1) break;
-            buffer[idx] = '\0';
-            
-            if (strstr(buffer, expected) != NULL) {
-                return true;
-            }
-        }
-        thread_sleep_for(10);
+    // 绑定事件处理回调
+    _ble.onEventsToProcess(makeFunctionPointer(this, &BLEService::scheduleBleEventsProcessing));
+
+    // 初始化 BLE
+    _ble.init(this, &BLEService::onInitComplete);
+
+    // 启动事件处理线程
+    _event_thread.start(callback(&_event_queue, &events::EventQueue::dispatch_forever));
+}
+
+void BLEService::scheduleBleEventsProcessing(BLE::OnEventsToProcessCallbackContext *context) {
+    _event_queue.call(Callback<void()>(&context->ble, &BLE::processEvents));
+}
+
+void BLEService::onInitComplete(BLE::InitializationCompleteCallbackContext *params) {
+    if (params->error != BLE_ERROR_NONE) {
+        printf("BLE initialization failed.\r\n");
+        return;
     }
-    return false;
+
+    printf("BLE initialized successfully.\r\n");
+    
+    // 设置 Gap 事件处理程序 (this 类实现了 Gap::EventHandler)
+    _ble.gap().setEventHandler(this);
+
+    // 配置特征值
+    // 1. Tremor: Read + Notify
+    UUID tremorUUID(TREMOR_CHAR_UUID);
+    _tremorChar = new GattCharacteristic(tremorUUID, _tremorValue, sizeof(_tremorValue), sizeof(_tremorValue), 
+                                         GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_READ | GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_NOTIFY);
+
+    // 2. Dyskinesia: Read + Notify
+    UUID dyskinesiaUUID(DYSKINESIA_CHAR_UUID);
+    _dyskinesiaChar = new GattCharacteristic(dyskinesiaUUID, _dyskinesiaValue, sizeof(_dyskinesiaValue), sizeof(_dyskinesiaValue), 
+                                             GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_READ | GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_NOTIFY);
+
+    // 3. FOG: Read + Notify
+    UUID fogUUID(FOG_CHAR_UUID);
+    _fogChar = new GattCharacteristic(fogUUID, _fogValue, sizeof(_fogValue), sizeof(_fogValue), 
+                                      GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_READ | GattCharacteristic::BLE_GATT_CHAR_PROPERTIES_NOTIFY);
+
+    // 配置服务
+    GattCharacteristic *charTable[] = { _tremorChar, _dyskinesiaChar, _fogChar };
+    UUID pdServiceUUID(PD_SERVICE_UUID);
+    GattService pdService(pdServiceUUID, charTable, 3);
+
+    _ble.gattServer().addService(pdService);
+
+    // 启动广播
+    startAdvertising();
 }
 
-bool BLEService::begin() {
-    printf("Initializing HM-10 BLE module...\r\n");
+void BLEService::startAdvertising() {
+    // 使用 AdvertisingDataBuilder 构建广播包
+    ble::AdvertisingDataBuilder adv_data_builder(_adv_buffer);
+
+    adv_data_builder.setFlags(); // 默认 flags
+    adv_data_builder.setName("PDMonitor");
     
-    thread_sleep_for(1000); // 等待模块启动
-    
-    // 测试 AT 命令
-    sendCommand("AT");
-    if (!waitForResponse("OK", 1000)) {
-        printf("Warning: No response from BLE module\r\n");
-        printf("Check connections: TX=%d, RX=%d\r\n", BLE_TX, BLE_RX);
-    } else {
-        printf("BLE module responding\r\n");
+    // 添加 16-bit UUID
+    UUID pdServiceUUID(PD_SERVICE_UUID);
+    adv_data_builder.setLocalServiceList(mbed::make_Span(&pdServiceUUID, 1));
+
+    // 设置广播参数
+    ble::AdvertisingParameters adv_params(
+        ble::advertising_type_t::CONNECTABLE_UNDIRECTED,
+        ble::adv_interval_t(ble::millisecond_t(1000))
+    );
+
+    // 设置 payload 并启动
+    ble_error_t error = _ble.gap().setAdvertisingParameters(_adv_handle, adv_params);
+    if (error) {
+        printf("Error setting advertising params: %d\r\n", error);
+        return;
     }
-    
-    // 设置设备名称
-    sendCommand("AT+NAMEPDMonitor");
-    thread_sleep_for(500);
-    
-    // 设置为从机模式
-    sendCommand("AT+ROLE0");
-    thread_sleep_for(500);
-    
-    // 复位模块使设置生效
-    sendCommand("AT+RESET");
-    thread_sleep_for(1000);
-    
-    printf("BLE Service initialized\r\n");
-    printf("Device name: PDMonitor\r\n");
-    printf("Waiting for connection...\r\n");
-    
-    deviceConnected = true; // 简化：假设连接
-    return true;
+
+    error = _ble.gap().setAdvertisingPayload(_adv_handle, adv_data_builder.getAdvertisingData());
+    if (error) {
+        printf("Error setting advertising payload: %d\r\n", error);
+        return;
+    }
+
+    error = _ble.gap().startAdvertising(_adv_handle);
+    if (error) {
+        printf("Error starting advertising: %d\r\n", error);
+        return;
+    }
+
+    printf("BLE advertising started. Name: PDMonitor\r\n");
+}
+
+void BLEService::onConnectionComplete(const ble::ConnectionCompleteEvent &event) {
+    if (event.getStatus() == BLE_ERROR_NONE) {
+        printf("Device connected!\r\n");
+        _connected = true;
+    }
+}
+
+void BLEService::onDisconnectionComplete(const ble::DisconnectionCompleteEvent &event) {
+    printf("Device disconnected. Restarting advertising...\r\n");
+    _connected = false;
+    startAdvertising();
 }
 
 void BLEService::updateData(DetectionResult result) {
-    if (!deviceConnected) {
-        return;
-    }
-    
-    // 发送震颤数据
-    char tremorData[64];
-    snprintf(tremorData, sizeof(tremorData), "TREMOR:%d,%.2f\r\n", 
-             result.tremorDetected ? 1 : 0, 
-             result.tremorIntensity);
-    sendString(tremorData);
-    
-    // 发送运动障碍数据
-    char dyskData[64];
-    snprintf(dyskData, sizeof(dyskData), "DYSK:%d,%.2f\r\n", 
-             result.dyskinesiaDetected ? 1 : 0, 
-             result.dyskinesiaIntensity);
-    sendString(dyskData);
-    
-    // 发送冻结步态数据
-    const char* stateStr;
-    switch (result.motionState) {
-        case MOTION_IDLE: stateStr = "IDLE"; break;
-        case MOTION_WALKING: stateStr = "WALKING"; break;
-        case MOTION_FROZEN: stateStr = "FROZEN"; break;
-        default: stateStr = "UNKNOWN"; break;
-    }
-    
-    char fogData[64];
-    snprintf(fogData, sizeof(fogData), "FOG:%d,%s\r\n", 
-             result.fogDetected ? 1 : 0, 
-             stateStr);
-    sendString(fogData);
-    
-    printf("BLE TX: %s%s%s", tremorData, dyskData, fogData);
+    if (!_connected) return;
+
+    // 更新 Tremor 数据
+    _tremorValue[0] = result.tremorDetected ? 1 : 0;
+    memcpy(&_tremorValue[1], &result.tremorIntensity, sizeof(float));
+    _ble.gattServer().write(_tremorChar->getValueHandle(), _tremorValue, 5);
+
+    // 更新 Dyskinesia 数据
+    _dyskinesiaValue[0] = result.dyskinesiaDetected ? 1 : 0;
+    memcpy(&_dyskinesiaValue[1], &result.dyskinesiaIntensity, sizeof(float));
+    _ble.gattServer().write(_dyskinesiaChar->getValueHandle(), _dyskinesiaValue, 5);
+
+    // 更新 FOG 数据
+    _fogValue[0] = result.fogDetected ? 1 : 0;
+    _fogValue[1] = (uint8_t)result.motionState;
+    _ble.gattServer().write(_fogChar->getValueHandle(), _fogValue, 2);
 }
 
 bool BLEService::isConnected() {
-    return deviceConnected;
-}
-
-void BLEService::sendString(const char* str) {
-    bleSerial->write(str, strlen(str));
+    return _connected;
 }

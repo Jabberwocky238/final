@@ -2,7 +2,7 @@
 #include "config.h"
 #include "sensor.h"
 #include "detector.h"
-// #include "ble_service.h"  // 暂时禁用 BLE
+#include "ble_service.h"
 
 // 重定向 stdout 到硬件串口 (修复串口输出问题)
 UnbufferedSerial pc(USBTX, USBRX, 115200);
@@ -16,7 +16,7 @@ namespace mbed {
 // 全局对象
 SensorManager sensor;
 Detector detector;
-// BLEService bleService;  // 暂时禁用 BLE
+BLEService bleService;
 
 // LED
 DigitalOut led1(LED1);
@@ -44,9 +44,9 @@ int main() {
         }
     }
     
-    // 初始化 BLE (暂时禁用)
-    // printf("Initializing BLE...\r\n");
-    // bleService.begin();
+    // 初始化 BLE
+    printf("Initializing BLE...\r\n");
+    bleService.begin();
 
     // 启动采样
     sensor.startSampling();
@@ -82,8 +82,8 @@ int main() {
             printf("Running detector analysis...\r\n");
             currentResult = detector.analyze(sensor.getDataBuffer(), currentMotion);
 
-            // 更新 BLE 数据 (暂时禁用)
-            // bleService.updateData(currentResult);
+            // 更新 BLE 数据
+            bleService.updateData(currentResult);
 
             // 清除缓冲区标志
             sensor.clearBuffer();
