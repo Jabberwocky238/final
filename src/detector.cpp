@@ -89,9 +89,8 @@ void Detector::updateMotionState(float currentMotion) {
     printf("Motion: %.2f, Avg: %.2f, StdDev: %.3f\r\n",
            currentMotion, avgMotion, stdDev);
 
-    // 使用标准差阈值判断是否在运动
-    // 提高阈值到 0.2 (0.05太敏感，0.1有时很难触发，试取中间或偏高以防误触)
-    bool isMoving = (stdDev > 0.2f);
+    // 使用标准差阈值 (0.1) 判断是否在运动
+    bool isMoving = (stdDev > 0.1f);
 
     switch (currentState) {
         case MOTION_IDLE:
@@ -106,20 +105,18 @@ void Detector::updateMotionState(float currentMotion) {
         case MOTION_WALKING:
             if (isMoving) {
                 lastMotionTime = currentTime;
-                // ...
+                printf("Still walking (time: %lu ms, stddev: %.3f)\r\n",
+                       currentTime - walkingStartTime, stdDev);
             } else {
                 uint32_t stopTime = currentTime - lastMotionTime;
                 uint32_t walkTime = currentTime - walkingStartTime;
-                
-                // ...
+                printf("Stopped! Stop time: %lu ms, Walk time: %lu ms (stddev: %.3f)\r\n",
+                       stopTime, walkTime, stdDev);
+
                 if (stopTime > FREEZE_TIME_MS) {
-                    // 只要走过 1.5秒 (1500ms) 然后停下，就视为冻结
-                    // 增加一点行走时间要求，避免碰一下就触发
-                    if (walkTime > 1500) {
+                    if (walkTime > 3000) {
                         currentState = MOTION_FROZEN;
                         printf("State: WALKING -> FROZEN\r\n");
-                        // 记录进入冻结的时间，用于超时复位（复用 lastMotionTime 或新变量，这里简单处理复用逻辑）
-                        lastMotionTime = currentTime; 
                     } else {
                         currentState = MOTION_IDLE;
                         printf("State: WALKING -> IDLE (walk too short)\r\n");
@@ -134,13 +131,6 @@ void Detector::updateMotionState(float currentMotion) {
                 walkingStartTime = currentTime;
                 lastMotionTime = currentTime;
                 printf("State: FROZEN -> WALKING (resumed, stddev=%.3f)\r\n", stdDev);
-            } else {
-                // 如果在冻结状态下持续静止超过 5秒，自动复位到 IDLE
-                // 这里利用 lastMotionTime (在进入 FROZEN 时更新过) 计算时间
-                if (currentTime - lastMotionTime > 5000) {
-                    currentState = MOTION_IDLE;
-                    printf("State: FROZEN -> IDLE (timeout)\r\n");
-                }
             }
             break;
     }

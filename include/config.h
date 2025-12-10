@@ -8,13 +8,13 @@
 
 // 频率范围定义
 #define TREMOR_FREQ_MIN 3.0f        // 震颤最低频率 3Hz
-#define TREMOR_FREQ_MAX 6.0f        // 震颤范围扩大到 6Hz
-#define DYSKINESIA_FREQ_MIN 0.5f    // 运动障碍通常是低频不自主运动 (0.5-4Hz)
-#define DYSKINESIA_FREQ_MAX 4.0f    // 
+#define TREMOR_FREQ_MAX 5.0f        // 震颤最高频率 5Hz
+#define DYSKINESIA_FREQ_MIN 5.0f    // 运动障碍最低频率 5Hz
+#define DYSKINESIA_FREQ_MAX 7.0f    // 运动障碍最高频率 7Hz
 
 // 检测阈值 (降低以提高灵敏度)
-#define TREMOR_THRESHOLD 0.02f      // 进一步降低阈值
-#define DYSKINESIA_THRESHOLD 0.02f  // 进一步降低阈值
+#define TREMOR_THRESHOLD 0.05f      // 震颤幅值阈值 (降低)
+#define DYSKINESIA_THRESHOLD 0.05f  // 运动障碍幅值阈值 (降低)
 #define MOTION_THRESHOLD 0.30f      // 运动检测阈值 (降低以便检测停止)
 #define FREEZE_TIME_MS 1500         // 冻结检测时间 1.5秒 (缩短)
 
